@@ -1,0 +1,35 @@
+{
+  "timestamp": "2026-04-06T01:41:45.089456",
+  "search_method_comparison": {
+    "cosine": {
+      "mAP": 0.001299387165127007,
+      "avg_search_time": 0.023708305358886718,
+      "median_search_time": 0.02278876304626465,
+      "precision@1": 0.16,
+      "recall@1": 0.0003120230722728073,
+      "precision@5": 0.11600000000000002,
+      "recall@5": 0.0011452072395184516,
+      "precision@10": 0.10600000000000001,
+      "recall@10": 0.002157094373337237,
+      "precision@20": 0.09999999999999998,
+      "recall@20": 0.0041070312707726
+    },
+    "euclidean": {
+      "mAP": 0.0015284412351546902,
+      "avg_search_time": 0.03309478759765625,
+      "median_search_time": 0.03198504447937012,
+      "precision@1": 0.18,
+      "recall@1": 0.00034130564913957155,
+      "precision@5": 0.12000000000000002,
+      "recall@5": 0.001173029065542347,
+      "precision@10": 0.12,
+      "recall@10": 0.0023575683932328547,
+      "precision@20": 0.12299999999999998,
+      "recall@20": 0.004779742710169859
+    }
+  },
+  "model_comparison": {},
+  "recommendations": {
+    "search_method": "euclidean"
+  }
+}

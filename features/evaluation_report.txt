@@ -1,0 +1,64 @@
+================================================================================
+CNN IMAGE RETRIEVAL SYSTEM - EVALUATION REPORT
+================================================================================
+Generated: 2026-04-06 01:21:18
+================================================================================
+
+SECTION 1: SEARCH METHOD COMPARISON
+--------------------------------------------------------------------------------
+
+This section compares Cosine Similarity vs Euclidean Distance.
+
+COSINE SIMILARITY:
+  Mean Average Precision (mAP):  0.0014
+  Average Search Time:            23.23 ms
+  Median Search Time:             22.72 ms
+
+  Precision@K:
+    P@ 1:  0.1800
+    P@ 5:  0.1360
+    P@10:  0.1260
+    P@20:  0.1145
+
+  Recall@K:
+    R@ 1:  0.0003
+    R@ 5:  0.0013
+    R@10:  0.0025
+    R@20:  0.0045
+
+EUCLIDEAN SIMILARITY:
+  Mean Average Precision (mAP):  0.0015
+  Average Search Time:            32.28 ms
+  Median Search Time:             31.52 ms
+
+  Precision@K:
+    P@ 1:  0.1500
+    P@ 5:  0.1260
+    P@10:  0.1280
+    P@20:  0.1260
+
+  Recall@K:
+    R@ 1:  0.0003
+    R@ 5:  0.0012
+    R@10:  0.0024
+    R@20:  0.0048
+
+RECOMMENDATION: Euclidean Distance performs better (mAP: 0.0015)
+
+================================================================================
+
+SECTION 3: KEY FINDINGS & CONCLUSIONS
+--------------------------------------------------------------------------------
+
+1. Search Method:
+   - Euclidean Distance is recommended for this dataset
+   - Achieves mAP of 0.0015
+
+3. Performance Metrics:
+   - Precision@K measures how many retrieved images are relevant
+   - Recall@K measures how many relevant images were retrieved
+   - mAP provides an overall quality measure of the ranking
+
+================================================================================
+END OF REPORT
+================================================================================
