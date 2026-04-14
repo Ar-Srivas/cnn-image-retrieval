@@ -83,6 +83,26 @@ Test multiple CNN architectures:
 python -m src.model_comparison
 ```
 
+### 5. Run Simple Web Frontend (HTML/CSS)
+
+Use a lightweight browser UI to upload a query image and visualize pipeline timing/results:
+
+```bash
+python web_app.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:5000
+```
+
+Features in the UI:
+- Upload query image (JPG/PNG/WEBP)
+- Choose cosine or euclidean search
+- View top-K visual matches
+- See feature extraction/search/total timings
+
 ---
 
 ## Project Structure
@@ -98,6 +118,10 @@ python -m src.model_comparison
 ├── run_feature_extraction.py  # Extract features from dataset
 ├── demo_search.py             # Demo search script
 ├── generate_report.py         # Generate evaluation report
+├── web_app.py                 # Standalone Flask frontend launcher
+├── web/
+│   ├── templates/index.html   # Frontend page
+│   └── static/styles.css      # Frontend styles
 └── features/                  # Extracted features & reports
 ```
 

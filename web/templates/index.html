@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CNN Image Retrieval Visualizer</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+  <div class="bg-orb orb-1"></div>
+  <div class="bg-orb orb-2"></div>
+
+  <main class="page">
+    <header class="hero card">
+      <p class="eyebrow">Pipeline Visualizer</p>
+      <h1>CNN Image Retrieval Frontend</h1>
+      <p class="subtitle">
+        Upload a query image, run similarity search, and inspect each step with timing.
+      </p>
+      <div class="stats">
+        <span class="chip">Feature DB: {{ db_size }} images</span>
+      </div>
+    </header>
+
+    {% if db_error %}
+      <section class="alert error card">
+        <strong>Database Error:</strong> {{ db_error }}
+      </section>
+    {% endif %}
+
+    {% if error %}
+      <section class="alert error card">
+        <strong>Request Error:</strong> {{ error }}
+      </section>
+    {% endif %}
+
+    <section class="workspace-grid">
+      <section class="card panel">
+        <h2>Run Search</h2>
+        <form method="post" action="/search" enctype="multipart/form-data" class="search-form">
+          <label>
+            Query image
+            <input type="file" name="query_image" accept=".jpg,.jpeg,.png,.bmp,.webp" required>
+          </label>
+
+          <label>
+            Similarity method
+            <select name="method">
+              <option value="cosine" {% if method == 'cosine' %}selected{% endif %}>Cosine similarity</option>
+              <option value="euclidean" {% if method == 'euclidean' %}selected{% endif %}>Euclidean distance</option>
+            </select>
+          </label>
+
+          <label>
+            Top K results (1-20)
+            <input type="number" name="top_k" min="1" max="20" value="{{ top_k if top_k else 8 }}">
+          </label>
+
+          <button type="submit">Search Similar Images</button>
+        </form>
+      </section>
+
+      <section class="card panel">
+        <h2>Pipeline Steps</h2>
+        <ol class="pipeline-list">
+          <li>
+            <h3>Upload + Parse</h3>
+            <p>User image is received by the web wrapper.</p>
+          </li>
+          <li>
+            <h3>Query Feature Extraction</h3>
+            <p>Existing query pipeline extracts histogram + CNN features.</p>
+          </li>
+          <li>
+            <h3>Similarity Search</h3>
+            <p>Existing search module runs cosine or euclidean ranking.</p>
+          </li>
+          <li>
+            <h3>Visual Result Grid</h3>
+            <p>Top-K matches are rendered with score and rank.</p>
+          </li>
+        </ol>
+      </section>
+    </section>
+
+    {% if query_image_url and results %}
+      <section class="results-block card">
+        <div class="results-head">
+          <div>
+            <p class="eyebrow">Latest Query</p>
+            <h2>Search Output</h2>
+            <p class="meta">
+              Method: <strong>{{ method|capitalize }}</strong>
+              {% if timings %}
+                | Feature: {{ "%.2f"|format(timings.feature * 1000) }} ms
+                | Search: {{ "%.2f"|format(timings.search * 1000) }} ms
+                | Total: {{ "%.2f"|format(timings.total * 1000) }} ms
+              {% endif %}
+            </p>
+          </div>
+          <img class="query-preview" src="{{ query_image_url }}" alt="query image">
+        </div>
+
+        <div class="result-grid">
+          {% for item in results %}
+            <article class="result-card">
+              <img src="{{ item.image_url }}" alt="{{ item.filename }}">
+              <div class="result-info">
+                <p class="rank">#{{ item.rank }}</p>
+                <p class="filename">{{ item.filename }}</p>
+                <p class="score">{{ item.metric_label }}: {{ "%.4f"|format(item.score) }}</p>
+              </div>
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+    {% endif %}
+  </main>
+</body>
+</html>
