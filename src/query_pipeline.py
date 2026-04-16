@@ -77,12 +77,24 @@ def get_query_features_from_array(img_array: np.ndarray) -> np.ndarray:
         
     Returns:
         Combined feature vector
+        
+    Raises:
+        ValueError: If image array is invalid
     """
     import cv2
+    
+    if not isinstance(img_array, np.ndarray):
+        raise ValueError(f"Image must be numpy array, got {type(img_array).__name__}")
+    
+    if img_array.size == 0:
+        raise ValueError("Image array is empty")
     
     # Ensure proper format
     if len(img_array.shape) != 3:
         raise ValueError("Image must be 3-dimensional (H, W, C)")
+    
+    if img_array.shape[2] not in [3, 4]:
+        raise ValueError(f"Image must have 3 or 4 channels, got {img_array.shape[2]}")
     
     # Resize and blur (same as preprocess_image)
     img = cv2.resize(img_array, (224, 224))
@@ -92,7 +104,12 @@ def get_query_features_from_array(img_array: np.ndarray) -> np.ndarray:
     hist = get_histogram(img)
     cnn = get_cnn_features(img)
     
-    return np.concatenate([hist, cnn])
+    combined = np.concatenate([hist, cnn])
+    
+    if np.isnan(combined).any() or np.isinf(combined).any():
+        raise ValueError("Feature extraction produced NaN or Inf values")
+    
+    return combined
 
 
 if __name__ == "__main__":

@@ -19,6 +19,10 @@ def demo_search(query_image_path: str, top_k: int = 5, method: str = 'cosine'):
         top_k: Number of similar images to retrieve
         method: 'cosine' or 'euclidean'
     """
+    if top_k <= 0:
+        print(f"Error: top_k must be positive, got {top_k}")
+        return
+    
     print("="*60)
     print("IMAGE SIMILARITY SEARCH DEMO")
     print("="*60)
@@ -33,6 +37,9 @@ def demo_search(query_image_path: str, top_k: int = 5, method: str = 'cosine'):
         print("Please run feature extraction first:")
         print("  python run_feature_extraction.py")
         return
+    
+    # Validate top_k against database size
+    top_k = min(top_k, len(db))
     
     # Step 2: Process query image
     print(f"\n[2/3] Processing query image: {query_image_path}")
@@ -80,7 +87,13 @@ if __name__ == "__main__":
         sys.exit(1)
     
     query_path = sys.argv[1]
-    top_k = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+    
+    try:
+        top_k = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+    except ValueError:
+        print("Error: top_k must be an integer")
+        sys.exit(1)
+    
     method = sys.argv[3] if len(sys.argv) > 3 else 'cosine'
     
     if method not in ['cosine', 'euclidean']:

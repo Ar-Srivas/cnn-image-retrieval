@@ -70,7 +70,7 @@ def generate_text_report(
         f.write("\n" + "="*80 + "\n\n")
         
         # Section 2: Model Comparison
-        if model_comparison:
+        if model_comparison and len(model_comparison) > 0:
             f.write("SECTION 2: FEATURE EXTRACTOR COMPARISON\n")
             f.write("-"*80 + "\n\n")
             f.write("This section compares different CNN architectures for feature extraction.\n\n")
@@ -130,7 +130,7 @@ def generate_text_report(
         f.write(f"   - {better_method} is recommended for this dataset\n")
         f.write(f"   - Achieves mAP of {better_map:.4f}\n\n")
         
-        if model_comparison:
+        if model_comparison and len(model_comparison) > 0:
             f.write("2. Feature Extractor:\n")
             f.write(f"   - {best_accuracy[0]} provides the highest accuracy\n")
             f.write(f"   - {fastest[0]} offers the fastest retrieval speed\n")
@@ -167,7 +167,7 @@ def generate_json_report(
     else:
         report['recommendations']['search_method'] = 'euclidean'
     
-    if model_comparison:
+    if model_comparison and len(model_comparison) > 0:
         best_model = max(model_comparison.items(), 
                         key=lambda x: x[1]['metrics']['mAP'])
         report['recommendations']['best_model'] = best_model[0]

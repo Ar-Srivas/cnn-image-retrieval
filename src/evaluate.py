@@ -2,7 +2,6 @@
 Evaluation Metrics for Image Retrieval System
 Implements precision@k, recall@k, mAP, and retrieval accuracy.
 """
-
 import numpy as np
 import pickle
 from typing import List, Tuple, Dict, Callable
@@ -17,26 +16,15 @@ from src.query_pipeline import process_query_image
 def get_ground_truth_category(filename: str) -> str:
     """
     Extract category from filename.
-    For Myntra dataset: filenames are numeric IDs without categories.
-    We use a hash-based approach to create pseudo-categories for testing.
-    
-    Note: For real evaluation, you should have actual category labels.
+    Assumes format: category_id.jpg or similar pattern.
+    Adjust based on your dataset structure.
     """
-    # Check if filename has category prefix (e.g., "shirts_123.jpg")
+    # Example: "shirts_1234.jpg" -> "shirts"
+    # Modify this based on your actual filename convention
     parts = filename.split('_')
     if len(parts) > 1:
         return parts[0]
-    
-    # For numeric-only filenames, create pseudo-categories based on ID ranges
-    # This allows testing the evaluation metrics
-    try:
-        img_id = int(filename.split('.')[0])
-        # Group images into categories based on ID ranges
-        # This creates ~10 pseudo-categories for testing purposes
-        category_id = (img_id // 5000) % 10
-        return f"category_{category_id}"
-    except:
-        return "unknown"
+    return filename.split('.')[0]
 
 
 def precision_at_k(retrieved: List[str], relevant: List[str], k: int) -> float:
@@ -47,6 +35,7 @@ def precision_at_k(retrieved: List[str], relevant: List[str], k: int) -> float:
         retrieved: List of retrieved image filenames (ordered by relevance)
         relevant: List of ground truth relevant image filenames
         k: Number of top results to consider
+        
         
     Returns:
         Precision@K score (0.0 to 1.0)
@@ -129,6 +118,9 @@ def mean_average_precision(all_results: List[Tuple[List[str], List[str]]]) -> fl
     ap_scores = [average_precision(retrieved, relevant) 
                  for retrieved, relevant in all_results]
     
+    if len(ap_scores) == 0:
+        return 0.0
+    
     return np.mean(ap_scores)
 
 
@@ -175,6 +167,9 @@ def evaluate_retrieval_system(
     """
     all_filenames = list(feature_db.keys())
     
+    if len(all_filenames) == 0:
+        raise ValueError("Feature database is empty")
+    
     # Randomly sample queries
     np.random.seed(42)  # For reproducibility
     query_samples = np.random.choice(
@@ -214,16 +209,28 @@ def evaluate_retrieval_system(
         
         ap_scores.append(average_precision(retrieved[:max_k], relevant))
     
-    # Aggregate results
-    metrics = {
-        'mAP': np.mean(ap_scores),
-        'avg_search_time': np.mean(search_times),
-        'median_search_time': np.median(search_times),
-    }
+    # Aggregate results (handle empty arrays)
+    metrics = {}
+    
+    if len(ap_scores) > 0:
+        metrics['mAP'] = np.mean(ap_scores)
+    else:
+        metrics['mAP'] = 0.0
+    
+    if len(search_times) > 0:
+        metrics['avg_search_time'] = np.mean(search_times)
+        metrics['median_search_time'] = np.median(search_times)
+    else:
+        metrics['avg_search_time'] = 0.0
+        metrics['median_search_time'] = 0.0
     
     for k in k_values:
-        metrics[f'precision@{k}'] = np.mean(precision_scores[k])
-        metrics[f'recall@{k}'] = np.mean(recall_scores[k])
+        if len(precision_scores[k]) > 0:
+            metrics[f'precision@{k}'] = np.mean(precision_scores[k])
+            metrics[f'recall@{k}'] = np.mean(recall_scores[k])
+        else:
+            metrics[f'precision@{k}'] = 0.0
+            metrics[f'recall@{k}'] = 0.0
     
     return metrics
 

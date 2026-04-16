@@ -10,16 +10,35 @@ def load_feature_db(filepath="features/image_features.pkl"):
     """
     with open(filepath, 'rb') as f:
         data = pickle.load(f)
+    
+    if not isinstance(data, dict):
+        raise ValueError(f"Feature database must be a dictionary, got {type(data).__name__}")
+    
+    if len(data) == 0:
+        raise ValueError("Feature database is empty. Please run feature extraction first.")
+    
     return data
 
 def search_cosine(query_vec, feature_db, top_k=5):
     """
     Finds top-K matches using Cosine Similarity (Higher is better).
     """
+    if len(feature_db) == 0:
+        raise ValueError("Feature database is empty")
+    
+    if top_k <= 0:
+        raise ValueError(f"top_k must be positive, got {top_k}")
+    
     all_vectors = np.array(list(feature_db.values()))
     filenames = list(feature_db.keys())
     
     query_vec = query_vec.reshape(1, -1)
+    
+    if np.isnan(query_vec).any() or np.isinf(query_vec).any():
+        raise ValueError("Query vector contains NaN or Inf values")
+    
+    if np.isnan(all_vectors).any() or np.isinf(all_vectors).any():
+        raise ValueError("Feature database contains NaN or Inf values")
     
     # Calculate similarity scores (1.0 = identical)
     start_time = time.time()
@@ -36,10 +55,22 @@ def search_euclidean(query_vec, feature_db, top_k=5):
     """
     Finds top-K matches using Euclidean Distance (Lower is better).
     """
+    if len(feature_db) == 0:
+        raise ValueError("Feature database is empty")
+    
+    if top_k <= 0:
+        raise ValueError(f"top_k must be positive, got {top_k}")
+    
     all_vectors = np.array(list(feature_db.values()))
     filenames = list(feature_db.keys())
     
     query_vec = query_vec.reshape(1, -1)
+    
+    if np.isnan(query_vec).any() or np.isinf(query_vec).any():
+        raise ValueError("Query vector contains NaN or Inf values")
+    
+    if np.isnan(all_vectors).any() or np.isinf(all_vectors).any():
+        raise ValueError("Feature database contains NaN or Inf values")
     
     # Calculate straight-line distance (0.0 = identical)
     start_time = time.time()

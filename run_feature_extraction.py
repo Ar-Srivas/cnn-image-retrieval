@@ -22,29 +22,51 @@ def main():
     all_files = os.listdir(DATASET_PATH)
     image_files = [f for f in all_files if f.endswith((".jpg", ".png", ".jpeg"))]
     
+    if not image_files:
+        print(f"Error: No image files found in {DATASET_PATH}")
+        return
+    
     # Randomly select up to 5000 images
     num_images = min(5000, len(image_files))
     selected_files = random.sample(image_files, num_images)
     
     print(f"Processing {num_images} randomly selected images...")
+    
+    failed_count = 0
 
     for file in tqdm(selected_files):
         path = os.path.join(DATASET_PATH, file)
 
         try:
             img = preprocess_image(path)
+            if img is None:
+                failed_count += 1
+                print(f"Skipping {file}: Image is None")
+                continue
             feat = combine_features(img)
+            if feat is None or len(feat) == 0:
+                failed_count += 1
+                print(f"Skipping {file}: Failed to extract features")
+                continue
             features[file] = feat
         except Exception as e:
+            failed_count += 1
             print(f"Skipping {file}: {e}")
 
     # Create features directory if it doesn't exist
     os.makedirs(os.path.dirname(FEATURES_PATH), exist_ok=True)
     
+    if not features:
+        print("Error: No features were successfully extracted!")
+        return
+    
     with open(FEATURES_PATH, "wb") as f:
         pickle.dump(features, f)
 
-    print("Done. Features saved.")
+    print(f"Done. Processed {len(features)}/{num_images} images successfully.")
+    if failed_count > 0:
+        print(f"Failed to process {failed_count} images.")
+    print(f"Features saved to {FEATURES_PATH}")
 
 if __name__ == "__main__":
     main()
