@@ -56,6 +56,11 @@
             <input type="number" name="top_k" min="1" max="20" value="{{ top_k if top_k else 8 }}">
           </label>
 
+          <label class="inline-toggle">
+            <span>Use Moondream caption (server.py)</span>
+            <input type="checkbox" name="use_moondream" {% if use_moondream %}checked{% endif %}>
+          </label>
+
           <button type="submit">Search Similar Images</button>
         </form>
       </section>
@@ -83,36 +88,48 @@
       </section>
     </section>
 
-    {% if query_image_url and results %}
+    {% if query_image_url and (results or moondream) %}
       <section class="results-block card">
         <div class="results-head">
           <div>
             <p class="eyebrow">Latest Query</p>
             <h2>Search Output</h2>
             <p class="meta">
-              Method: <strong>{{ method|capitalize }}</strong>
+              Mode: <strong>{{ mode_label }}</strong>
               {% if timings %}
                 | Feature: {{ "%.2f"|format(timings.feature * 1000) }} ms
                 | Search: {{ "%.2f"|format(timings.search * 1000) }} ms
                 | Total: {{ "%.2f"|format(timings.total * 1000) }} ms
+              {% endif %}
+              {% if moondream %}
+                | Moondream: {{ "%.2f"|format(moondream.time * 1000) }} ms
               {% endif %}
             </p>
           </div>
           <img class="query-preview" src="{{ query_image_url }}" alt="query image">
         </div>
 
-        <div class="result-grid">
-          {% for item in results %}
-            <article class="result-card">
-              <img src="{{ item.image_url }}" alt="{{ item.filename }}">
-              <div class="result-info">
-                <p class="rank">#{{ item.rank }}</p>
-                <p class="filename">{{ item.filename }}</p>
-                <p class="score">{{ item.metric_label }}: {{ "%.4f"|format(item.score) }}</p>
-              </div>
-            </article>
-          {% endfor %}
-        </div>
+        {% if moondream %}
+          <div class="moondream-card">
+            <p class="eyebrow">Moondream Analysis</p>
+            <p class="moondream-text">{{ moondream.caption }}</p>
+          </div>
+        {% endif %}
+
+        {% if results %}
+          <div class="result-grid">
+            {% for item in results %}
+              <article class="result-card">
+                <img src="{{ item.image_url }}" alt="{{ item.filename }}">
+                <div class="result-info">
+                  <p class="rank">#{{ item.rank }}</p>
+                  <p class="filename">{{ item.filename }}</p>
+                  <p class="score">{{ item.metric_label }}: {{ "%.4f"|format(item.score) }}</p>
+                </div>
+              </article>
+            {% endfor %}
+          </div>
+        {% endif %}
       </section>
     {% endif %}
   </main>

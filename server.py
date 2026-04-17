@@ -100,6 +100,7 @@ def get_moondream_caption(image: Image.Image):
         caption = _ollama_generate(image, MOONDREAM_IDENTITY_PROMPT)
     return caption
 
+
 @app.get("/")
 def read_root():
     return {
@@ -183,6 +184,10 @@ async def search_gallery(file: UploadFile = File(...), alpha: float = 0.4, top_k
             visual_score = float(np.clip(1.0 - match['dist'] / 2.0, 0.0, 1.0))
 
             final_score = (alpha * visual_score) + ((1 - alpha) * semantic_score)
+            analysis = (
+                f"[FUSION SCORE: {final_score:.4f}] "
+                f"(CLIP: {visual_score:.4f} | SBERT: {semantic_score:.4f})"
+            )
             
             final_results.append({
                 "id": gallery_item['id'],
@@ -191,6 +196,7 @@ async def search_gallery(file: UploadFile = File(...), alpha: float = 0.4, top_k
                 "visual_score": visual_score,
                 "semantic_score": float(semantic_score),
                 "final_score": float(final_score),
+                "analysis": analysis,
                 "old_rank": match['rank']
             })
         

@@ -129,6 +129,18 @@ body {
   font-size: 0.95rem;
 }
 
+.search-form .inline-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+}
+
+.search-form .inline-toggle input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+}
+
 input,
 select,
 button {
@@ -179,6 +191,21 @@ button:hover {
 
 .results-block {
   padding: 1rem;
+}
+
+.moondream-card {
+  margin-top: 1rem;
+  padding: 0.9rem;
+  border-radius: 14px;
+  border: 1px dashed var(--line);
+  background: #fffdf8;
+}
+
+.moondream-text {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.4;
 }
 
 .results-head {
