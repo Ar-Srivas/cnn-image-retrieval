@@ -219,6 +219,15 @@ def _is_caption_usable(text: str) -> bool:
     return True
 
 
+def _normalize_query_caption_for_display(text: str) -> str:
+    normalized = (text or "").strip()
+    words = [w for w in normalized.split() if w]
+    # Keep UI clean when the VLM returns a very short token like "urn".
+    if len(normalized) < 15 or len(words) < 3:
+        return "Low-confidence VLM caption. See terminal logs for raw model output."
+    return normalized
+
+
 def _log_vlm_text(context: str, attempt: str, text: str) -> None:
     normalized = (text or "").replace("\n", " ").strip()
     if len(normalized) > VLM_LOG_MAX_CHARS:
@@ -636,6 +645,7 @@ def _search_clip_vlm(
 
     t2 = time.perf_counter()
     query_caption = _ollama_generate(query_image, prompt, context="query")
+    query_caption_display = _normalize_query_caption_for_display(query_caption)
     q_text_emb = text_model.encode(query_caption, convert_to_tensor=True)
     timings["query_caption"] = time.perf_counter() - t2
 
@@ -676,6 +686,7 @@ def _search_clip_vlm(
     semantic_candidates.sort(key=lambda x: x["final_score"], reverse=True)
     return semantic_candidates[:top_k], {
         "query_caption": query_caption,
+        "query_caption_display": query_caption_display,
         "semantic_shortlist": semantic_limit,
         "semantic_processed": len(semantic_candidates),
         "timings": timings,
@@ -832,6 +843,7 @@ def search():
                     "total": round(total_time * 1000, 2),
                 },
                 "query_caption": clip_meta["query_caption"],
+                "query_caption_display": clip_meta["query_caption_display"],
                 "results": [
                     {
                         "rank": idx + 1,
@@ -856,6 +868,7 @@ def search():
                 query_image_url=url_for("serve_query_image", filename=saved_name),
                 clip_vlm={
                     "query_caption": clip_meta["query_caption"],
+                    "query_caption_display": clip_meta["query_caption_display"],
                     "results": clip_results,
                     "alpha": alpha,
                 },
