@@ -153,76 +153,61 @@ $$
 
 ---
 
-## 7) One-line functionality comments (key functions)
+## 7) Run locally on a new device (uv + Ollama CLI)
 
-## [src/preprocess.py](src/preprocess.py)
+### A) Install prerequisites
 
-- `preprocess_image(path)`: Loads an image, resizes to 224x224, and applies Gaussian blur.
-- `get_histogram(img)`: Extracts a flattened 3D color histogram (8 bins per channel).
+```powershell
+# Install uv (Python package/project manager)
+winget install --id Astral-sh.uv -e
 
-## [src/extract_features.py](src/extract_features.py)
+# Install Ollama
+winget install --id Ollama.Ollama -e
+```
 
-- `get_cnn_features(img)`: Converts image to RGB tensor and extracts ResNet50 embedding with validation checks.
+### B) Get project and install Python dependencies
 
-## [src/query_pipeline.py](src/query_pipeline.py)
+```powershell
+git clone https://github.com/Ar-Srivas/Semantic-Reverse-Search.git
+cd Semantic-Reverse-Search
 
-- `process_query_image(image_path)`: Runs full preprocessing + histogram + CNN extraction for one query image.
-- `batch_process_query_images(image_paths)`: Processes multiple query images and returns filename-to-feature mapping.
-- `get_query_features_from_array(img_array)`: Same feature pipeline for in-memory uploaded images.
+# Create .venv and install dependencies from pyproject.toml
+uv sync
+```
 
-## [src/similarity_search.py](src/similarity_search.py)
+### C) Start Ollama and download Moondream
 
-- `load_feature_db(filepath)`: Loads serialized image feature database from pickle.
-- `search_cosine(query_vec, feature_db, top_k)`: Returns top-K nearest images by cosine similarity.
-- `search_euclidean(query_vec, feature_db, top_k)`: Returns top-K nearest images by Euclidean distance.
+```powershell
+# In a separate terminal, start Ollama server (skip if already running as a service)
+ollama serve
 
-## [src/evaluate.py](src/evaluate.py)
+# Pull the model used by web_app.py
+ollama pull moondream
+```
 
-- `get_ground_truth_category(filename)`: Derives pseudo-category label from filename pattern.
-- `precision_at_k(retrieved, relevant, k)`: Computes precision among the top-K retrieved images.
-- `recall_at_k(retrieved, relevant, k)`: Computes recall coverage among relevant images at K.
-- `average_precision(retrieved, relevant)`: Computes AP for a single ranked retrieval list.
-- `mean_average_precision(all_results)`: Computes mAP across multiple queries.
-- `get_relevant_images(query_filename, all_filenames)`: Builds relevant set by same derived category.
-- `evaluate_retrieval_system(feature_db, search_func, ...)`: Runs full evaluation loop over sampled queries.
-- `compare_search_methods(feature_db, num_queries)`: Compares cosine vs euclidean retrieval metrics.
-- `print_evaluation_report(comparison)`: Prints formatted evaluation summary to console.
+### D) Build CNN feature database (required for classic retrieval)
 
-## [src/model_comparison.py](src/model_comparison.py)
+```powershell
+uv run python run_feature_extraction.py
+```
 
-- `FeatureExtractor.extract_features(img)`: Converts image to normalized tensor and extracts model features.
-- `FeatureExtractor.get_combined_features(img)`: Concatenates histogram and model embedding.
-- `extract_features_with_model(extractor, dataset_path, max_images)`: Builds feature DB with a chosen CNN architecture.
-- `compare_models(dataset_path, max_images, num_eval_queries)`: Benchmarks multiple CNN backbones on retrieval metrics.
-- `print_model_comparison_report(results)`: Prints model-wise accuracy/speed comparison report.
+### E) Run the web app
 
-## [run_feature_extraction.py](run_feature_extraction.py)
+```powershell
+uv run python web_app.py
+```
 
-- `combine_features(img)`: Concatenates histogram and CNN embeddings into one vector.
-- `main()`: Randomly samples dataset images, extracts features, and saves `features/image_features.pkl`.
+Open this URL in your browser:
 
-## [demo_search.py](demo_search.py)
+```text
+http://127.0.0.1:5000
+```
 
-- `demo_search(query_image_path, top_k, method)`: End-to-end CLI demo for query processing and similarity retrieval.
+### F) Optional: run quick CLI demo search
 
-## [generate_report.py](generate_report.py)
-
-- `generate_text_report(...)`: Writes a human-readable evaluation report.
-- `generate_json_report(...)`: Writes a machine-readable JSON evaluation report.
-- `run_full_evaluation(...)`: Executes evaluation workflow and saves all outputs.
-
-## [web_app.py](web_app.py) (advanced web logic)
-
-- `_clip_features_from_image(image)`: Extracts CLIP image embedding robustly from different output wrappers.
-- `_ollama_generate(image, prompt, ...)`: Calls Ollama Moondream and retries/fallbacks on low-quality captions.
-- `_get_caption_for_file(filename, prompt)`: Retrieves cached caption or computes and stores a new one.
-- `_build_gallery_signature(dataset_files)`: Creates cache signature to detect when CLIP index must be rebuilt.
-- `_try_load_cached_clip_index(...)`: Loads persisted FAISS CLIP index when metadata matches.
-- `_ensure_clip_gallery()`: Lazily builds or loads CLIP gallery index with lock-based concurrency safety.
-- `_search_clip_vlm(query_image, top_k, alpha, prompt)`: Runs CLIP shortlist + VLM captions + SBERT fusion rerank.
-- `search()`: Handles upload validation and dispatches request to CNN or CLIP-VLM retrieval branch.
-- `serve_dataset_image(filename)`: Securely serves dataset images to UI.
-- `serve_query_image(filename)`: Securely serves uploaded query images to UI.
+```powershell
+uv run python demo_search.py
+```
 
 ## 8) Practical summary
 
