@@ -5,13 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "faiss-cpu>=1.9.0",
     "flask>=3.1.0",
     "numpy>=2.4.3",
     "opencv-python>=4.13.0.92",
     "pandas>=3.0.1",
     "pillow>=12.1.1",
     "scikit-learn>=1.8.0",
+    "sentence-transformers>=4.1.0",
     "torch>=2.10.0",
+    "transformers>=4.57.0",
     "torchvision>=0.25.0",
     "tqdm>=4.67.3",
 ]

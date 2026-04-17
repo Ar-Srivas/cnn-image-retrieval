@@ -1,30 +1,52 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import io
 import json
-import time
-import uuid
-from pathlib import Path
-import os
 import mimetypes
+import os
+import threading
+import time
 import urllib.error
 import urllib.request
+import uuid
+from pathlib import Path
 
+import faiss
+import numpy as np
+import torch
+from PIL import Image
 from flask import Flask, render_template, request, send_from_directory, url_for
+from sentence_transformers import SentenceTransformer, util
+from transformers import CLIPModel, CLIPProcessor
 
 from src.query_pipeline import process_query_image
 from src.similarity_search import load_feature_db, search_cosine, search_euclidean
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-DATASET_IMAGE_DIR = PROJECT_ROOT / "data" / "myntradataset" / "images"
+DATASET_IMAGE_DIR = (PROJECT_ROOT / "data" / "myntradataset" / "images").resolve()
 UPLOAD_DIR = PROJECT_ROOT / "web" / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+CLIP_CACHE_DIR = PROJECT_ROOT / "features" / "clip_vlm_cache"
+CLIP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+CLIP_INDEX_FILE = CLIP_CACHE_DIR / "clip_index.faiss"
+CLIP_META_FILE = CLIP_CACHE_DIR / "clip_index_meta.json"
+CAPTION_CACHE_FILE = CLIP_CACHE_DIR / "moondream_caption_cache.json"
 
 ALLOWED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 ALLOWED_MIMETYPES = {"image/jpeg", "image/png", "image/bmp", "image/webp"}
-MOONDREAM_BASE_URL = os.environ.get("MOONDREAM_BASE_URL", "http://localhost:8000")
-MOONDREAM_CAPTION_ENDPOINT = os.environ.get("MOONDREAM_CAPTION_ENDPOINT", "/caption")
-MOONDREAM_CAPTION_URL = f"{MOONDREAM_BASE_URL}{MOONDREAM_CAPTION_ENDPOINT}"
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+OLLAMA_MODEL = "moondream"
+OLLAMA_TIMEOUT_SEC = int(os.environ.get("OLLAMA_TIMEOUT_SEC", "120"))
+OLLAMA_OPTIONS = {"temperature": 0, "num_predict": 50}
+CLIP_VLM_MAX_IMAGES = 3000
+DEFAULT_VLM_PROMPT = os.environ.get(
+    "VLM_PROMPT",
+    "Identify this object. Is it a real organic item or a manufactured prop/ornament? "
+    "Look for artificial textures, seams, or unnatural gloss. Describe its material and nature.",
+)
 
 app = Flask(
     __name__,
@@ -39,6 +61,54 @@ try:
     FEATURE_DB = load_feature_db()
 except Exception as exc:
     DB_ERROR = f"Could not load feature database: {exc}"
+
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"[INIT] Device: {device}")
+
+print("[INIT] Loading CLIP...")
+clip_id = "openai/clip-vit-base-patch32"
+clip_model = CLIPModel.from_pretrained(clip_id).to(device)
+clip_processor = CLIPProcessor.from_pretrained(clip_id)
+
+print("[INIT] Loading SBERT...")
+text_model = SentenceTransformer("all-MiniLM-L6-v2")
+print(f"[INIT] Dataset image directory: {DATASET_IMAGE_DIR}")
+print(f"[INIT] CLIP gallery cap: first {CLIP_VLM_MAX_IMAGES} images")
+
+CLIP_INDEX_DIM = 512
+clip_index = faiss.IndexFlatL2(CLIP_INDEX_DIM)
+clip_gallery: list[dict] = []
+caption_cache: dict[str, str] = {}
+_clip_gallery_ready = False
+_clip_gallery_lock = threading.Lock()
+_caption_cache_lock = threading.Lock()
+
+
+def _load_caption_cache() -> dict[str, str]:
+    if not CAPTION_CACHE_FILE.exists():
+        return {}
+    try:
+        with open(CAPTION_CACHE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items()}
+    except Exception as exc:
+        print(f"[WARN] Could not load caption cache: {exc}")
+    return {}
+
+
+def _save_caption_cache() -> None:
+    try:
+        tmp_file = CAPTION_CACHE_FILE.with_suffix(".tmp")
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(caption_cache, f, ensure_ascii=True)
+        os.replace(tmp_file, CAPTION_CACHE_FILE)
+    except Exception as exc:
+        print(f"[WARN] Could not save caption cache: {exc}")
+
+
+caption_cache = _load_caption_cache()
 
 
 def _is_allowed_file(filename: str) -> bool:
@@ -72,49 +142,353 @@ def _build_result_rows(results: list[tuple[str, float]], method: str) -> list[di
     return rows
 
 
-def _build_multipart_body(file_path: Path) -> tuple[bytes, str]:
-    boundary = f"----MoonBoundary{uuid.uuid4().hex}"
-    filename = file_path.name
-    content_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+def _print_terminal_report(report: dict):
+    print("\n[REQUEST REPORT]")
+    print(json.dumps(report, indent=2, ensure_ascii=True))
 
-    body = bytearray()
-    body.extend(f"--{boundary}\r\n".encode("utf-8"))
-    body.extend(
-        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'.encode("utf-8")
+
+def _iter_dataset_files(limit: int | None = None) -> list[str]:
+    files = []
+    for path in DATASET_IMAGE_DIR.iterdir():
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in ALLOWED_EXTENSIONS:
+            continue
+        files.append(path.name)
+    files.sort()
+    if limit is not None:
+        return files[:limit]
+    return files
+
+
+def _read_image(path: Path) -> Image.Image:
+    return Image.open(path).convert("RGB")
+
+
+def _clip_features_from_image(image: Image.Image) -> np.ndarray:
+    inputs = clip_processor(images=image, return_tensors="pt").to(device)
+    with torch.no_grad():
+        features = clip_model.get_image_features(**inputs)
+
+    if isinstance(features, torch.Tensor):
+        tensor = features
+    elif hasattr(features, "pooler_output") and isinstance(features.pooler_output, torch.Tensor):
+        tensor = features.pooler_output
+    elif hasattr(features, "last_hidden_state") and isinstance(features.last_hidden_state, torch.Tensor):
+        # Fallback for output objects that expose only token embeddings.
+        tensor = features.last_hidden_state.mean(dim=1)
+    else:
+        raise TypeError(f"Unexpected CLIP feature output type: {type(features).__name__}")
+
+    if tensor.ndim == 1:
+        tensor = tensor.unsqueeze(0)
+
+    vector = tensor.detach().to(torch.float32).cpu().numpy()
+    return vector
+
+
+def _ollama_generate(
+    image: Image.Image,
+    prompt: str,
+    options: dict | None = None,
+    context: str = "image",
+) -> str:
+    prompt_hash = hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12]
+    request_options = options or OLLAMA_OPTIONS
+    start = time.perf_counter()
+    print(
+        f"[OLLAMA] request model={OLLAMA_MODEL} context={context} "
+        f"prompt_hash={prompt_hash}"
     )
-    body.extend(f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"))
-    body.extend(file_path.read_bytes())
-    body.extend(b"\r\n")
-    body.extend(f"--{boundary}--\r\n".encode("utf-8"))
 
-    return bytes(body), boundary
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    image_b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
 
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "images": [image_b64],
+        "stream": False,
+        "options": request_options,
+    }
 
-def _call_moondream_caption(file_path: Path) -> dict:
-    body, boundary = _build_multipart_body(file_path)
+    data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
-        MOONDREAM_CAPTION_URL,
-        data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        f"{OLLAMA_BASE_URL}/api/generate",
+        data=data,
+        headers={"Content-Type": "application/json"},
         method="POST",
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            payload = resp.read().decode("utf-8")
+        with urllib.request.urlopen(req, timeout=OLLAMA_TIMEOUT_SEC) as resp:
+            body = resp.read()
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", "ignore")
-        raise ValueError(f"Moondream request failed: {exc.code} {detail}") from exc
+        error_body = exc.read().decode("utf-8", "ignore")
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        print(
+            f"[OLLAMA] error context={context} status={exc.code} "
+            f"elapsed_ms={elapsed_ms:.1f}"
+        )
+        raise ValueError(f"Ollama request failed: {exc.code} {error_body}") from exc
     except urllib.error.URLError as exc:
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        print(
+            f"[OLLAMA] error context={context} status=unreachable "
+            f"elapsed_ms={elapsed_ms:.1f}"
+        )
         raise ValueError(
-            f"Moondream server not reachable at {MOONDREAM_CAPTION_URL}. Is server.py running?"
+            f"Ollama not reachable at {OLLAMA_BASE_URL}. Is it running?"
         ) from exc
 
-    data = json.loads(payload)
-    if data.get("status") != "success":
-        raise ValueError(data.get("message", "Moondream request failed"))
+    parsed = json.loads(body)
+    if "response" not in parsed:
+        raise ValueError(f"Unexpected Ollama response: {parsed}")
 
-    return data
+    response_text = parsed["response"].strip()
+    if not response_text:
+        response_text = "Unable to infer a reliable identity description from this image."
+        print(f"[OLLAMA] warn context={context} received empty response; using fallback text")
+
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    print(
+        f"[OLLAMA] ok context={context} elapsed_ms={elapsed_ms:.1f} "
+        f"chars={len(response_text)}"
+    )
+    return response_text
+
+
+def _get_caption_for_file(filename: str, prompt: str) -> str:
+    prompt_hash = hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:12]
+    cache_key = f"{OLLAMA_MODEL}:{prompt_hash}:{filename}"
+    with _caption_cache_lock:
+        if cache_key in caption_cache:
+            return caption_cache[cache_key]
+
+    image = _read_image(DATASET_IMAGE_DIR / filename)
+    caption = _ollama_generate(image, prompt, context=f"gallery:{filename}")
+
+    with _caption_cache_lock:
+        caption_cache[cache_key] = caption
+        _save_caption_cache()
+
+    return caption
+
+
+def _build_gallery_signature(dataset_files: list[str]) -> str:
+    records = []
+    for filename in dataset_files:
+        path = DATASET_IMAGE_DIR / filename
+        stat = path.stat()
+        records.append((filename, stat.st_size, int(stat.st_mtime)))
+
+    payload = {
+        "dataset_dir": str(DATASET_IMAGE_DIR),
+        "model": clip_id,
+        "index_dim": CLIP_INDEX_DIM,
+        "max_images": CLIP_VLM_MAX_IMAGES,
+        "files": records,
+    }
+    raw = json.dumps(payload, sort_keys=True).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _try_load_cached_clip_index(expected_signature: str) -> bool:
+    global clip_index
+
+    if not CLIP_INDEX_FILE.exists() or not CLIP_META_FILE.exists():
+        return False
+
+    try:
+        with open(CLIP_META_FILE, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+
+        if meta.get("signature") != expected_signature:
+            return False
+
+        cached_files = meta.get("files", [])
+        if not isinstance(cached_files, list) or not cached_files:
+            return False
+
+        loaded_index = faiss.read_index(str(CLIP_INDEX_FILE))
+        if loaded_index.ntotal != len(cached_files):
+            return False
+
+        clip_index = loaded_index
+        clip_gallery.clear()
+        clip_gallery.extend(
+            {"filename": fn, "id": fn} for fn in cached_files
+        )
+        print(
+            f"[INIT] Loaded cached CLIP index with {loaded_index.ntotal} items "
+            f"from {CLIP_INDEX_FILE}"
+        )
+        return True
+    except Exception as exc:
+        print(f"[WARN] Failed to load cached CLIP index: {exc}")
+        return False
+
+
+def _save_cached_clip_index(dataset_files: list[str], signature: str) -> None:
+    try:
+        index_tmp = CLIP_INDEX_FILE.with_suffix(".tmp")
+        faiss.write_index(clip_index, str(index_tmp))
+        os.replace(index_tmp, CLIP_INDEX_FILE)
+
+        meta = {
+            "signature": signature,
+            "files": dataset_files,
+            "index_dim": CLIP_INDEX_DIM,
+            "model": clip_id,
+            "max_images": CLIP_VLM_MAX_IMAGES,
+        }
+        meta_tmp = CLIP_META_FILE.with_suffix(".tmp")
+        with open(meta_tmp, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=True)
+        os.replace(meta_tmp, CLIP_META_FILE)
+        print(f"[INIT] Saved CLIP index cache to {CLIP_INDEX_FILE}")
+    except Exception as exc:
+        print(f"[WARN] Failed to save CLIP index cache: {exc}")
+
+
+def _ensure_clip_gallery() -> None:
+    global _clip_gallery_ready
+    if _clip_gallery_ready:
+        return
+
+    with _clip_gallery_lock:
+        if _clip_gallery_ready:
+            return
+
+        dataset_files = _iter_dataset_files(limit=CLIP_VLM_MAX_IMAGES)
+        if not dataset_files:
+            raise ValueError(f"No dataset images found in {DATASET_IMAGE_DIR}")
+
+        signature = _build_gallery_signature(dataset_files)
+        if _try_load_cached_clip_index(signature):
+            _clip_gallery_ready = True
+            return
+
+        print(
+            f"[INIT] Building CLIP gallery index from {len(dataset_files)} images "
+            f"(limit={CLIP_VLM_MAX_IMAGES})"
+        )
+
+        vectors = []
+        clip_gallery.clear()
+        for idx, filename in enumerate(dataset_files, start=1):
+            image_path = DATASET_IMAGE_DIR / filename
+            try:
+                image = _read_image(image_path)
+                emb = _clip_features_from_image(image)
+                faiss.normalize_L2(emb)
+                vectors.append(emb)
+                clip_gallery.append({
+                    "filename": filename,
+                    "id": filename,
+                })
+                if idx % 50 == 0 or idx == len(dataset_files):
+                    print(f"[INIT] CLIP index progress: {idx}/{len(dataset_files)}")
+            except Exception as exc:
+                print(f"[WARN] Skipping {filename}: {exc}")
+
+        if not vectors:
+            raise ValueError("Failed to build CLIP gallery; no valid embeddings were produced")
+
+        matrix = np.vstack(vectors).astype(np.float32)
+        clip_index.reset()
+        clip_index.add(matrix)
+        _save_cached_clip_index(dataset_files, signature)
+        _clip_gallery_ready = True
+        print(f"[INIT] CLIP gallery ready with {len(clip_gallery)} items")
+
+
+def _search_clip_vlm(
+    query_image: Image.Image,
+    top_k: int,
+    alpha: float,
+    prompt: str,
+) -> tuple[list[dict], dict]:
+    _ensure_clip_gallery()
+
+    timings: dict[str, float] = {}
+    t0 = time.perf_counter()
+    q_emb = _clip_features_from_image(query_image)
+    faiss.normalize_L2(q_emb)
+    timings["query_clip"] = time.perf_counter() - t0
+
+    search_limit = min(max(top_k * 4, 8), len(clip_gallery))
+    t1 = time.perf_counter()
+    distances, indices = clip_index.search(q_emb, search_limit)
+    timings["clip_search"] = time.perf_counter() - t1
+
+    t2 = time.perf_counter()
+    query_caption = _ollama_generate(query_image, prompt, context="query")
+    q_text_emb = text_model.encode(query_caption, convert_to_tensor=True)
+    timings["query_caption"] = time.perf_counter() - t2
+
+    t3 = time.perf_counter()
+    reranked = []
+    for rank, (idx, dist) in enumerate(zip(indices[0], distances[0]), start=1):
+        if idx < 0 or idx >= len(clip_gallery):
+            continue
+        gallery = clip_gallery[int(idx)]
+        filename = gallery["filename"]
+        candidate_caption = _get_caption_for_file(filename, prompt)
+        m_text_emb = text_model.encode(candidate_caption, convert_to_tensor=True)
+        semantic_score = float(util.cos_sim(q_text_emb, m_text_emb).item())
+        visual_score = float(np.clip(1.0 - float(dist) / 2.0, 0.0, 1.0))
+        final_score = (alpha * visual_score) + ((1.0 - alpha) * semantic_score)
+        reranked.append(
+            {
+                "rank": rank,
+                "id": gallery["id"],
+                "filename": filename,
+                "image_url": url_for("serve_dataset_image", filename=filename),
+                "caption": candidate_caption,
+                "visual_score": visual_score,
+                "semantic_score": semantic_score,
+                "final_score": float(final_score),
+                "analysis": (
+                    f"[FUSION SCORE: {final_score:.4f}] "
+                    f"(CLIP: {visual_score:.4f} | SBERT: {semantic_score:.4f})"
+                ),
+            }
+        )
+    timings["semantic_rerank"] = time.perf_counter() - t3
+    reranked.sort(key=lambda x: x["final_score"], reverse=True)
+
+    return reranked[:top_k], {
+        "query_caption": query_caption,
+        "timings": timings,
+    }
+
+
+def _render_error(
+    *,
+    message: str,
+    method: str,
+    top_k: int,
+    pipeline: str,
+    alpha: float,
+):
+    return render_template(
+        "index.html",
+        db_size=len(FEATURE_DB),
+        clip_db_size=len(clip_gallery),
+        db_error=DB_ERROR,
+        error=message,
+        method=method,
+        top_k=top_k,
+        pipeline=pipeline,
+        alpha=alpha,
+        mode_label=(
+            f"{method.capitalize()} similarity"
+            if pipeline == "cnn"
+            else "CLIP + Moondream fusion"
+        ),
+    )
 
 
 @app.route("/")
@@ -122,21 +496,34 @@ def index():
     return render_template(
         "index.html",
         db_size=len(FEATURE_DB),
+        clip_db_size=len(clip_gallery),
         db_error=DB_ERROR,
         method="cosine",
         top_k=8,
-        use_moondream=False,
-        mode_label="Similarity search",
+        pipeline="cnn",
+        alpha=0.4,
+        mode_label="Cosine similarity",
     )
 
 
 @app.route("/search", methods=["POST"])
 def search():
-    use_moondream = request.form.get("use_moondream") == "on"
-    mode_label = "Moondream caption" if use_moondream else "Similarity search"
+    pipeline = request.form.get("pipeline", "cnn").lower()
+    if pipeline not in {"cnn", "clip_vlm"}:
+        pipeline = "cnn"
+
+    mode_label = "CLIP + Moondream fusion" if pipeline == "clip_vlm" else "Similarity search"
+
     method = request.form.get("method", "cosine").lower()
     if method not in {"cosine", "euclidean"}:
         method = "cosine"
+
+    try:
+        alpha = float(request.form.get("alpha", "0.4"))
+    except ValueError:
+        alpha = 0.4
+    alpha = float(np.clip(alpha, 0.0, 1.0))
+    vlm_prompt = DEFAULT_VLM_PROMPT
 
     try:
         top_k = int(request.form.get("top_k", "8"))
@@ -144,68 +531,53 @@ def search():
         top_k = 8
     top_k = max(1, min(top_k, 20))
 
-    if DB_ERROR and not use_moondream:
-        return render_template(
-            "index.html",
-            db_size=0,
-            db_error=DB_ERROR,
-            error="Search is unavailable until feature DB is loaded.",
+    if DB_ERROR and pipeline == "cnn":
+        return _render_error(
+            message="Search is unavailable until feature DB is loaded.",
             method=method,
             top_k=top_k,
-            use_moondream=use_moondream,
-            mode_label=mode_label,
+            pipeline=pipeline,
+            alpha=alpha,
         )
 
     uploaded = request.files.get("query_image")
     if uploaded is None or uploaded.filename == "":
-        return render_template(
-            "index.html",
-            db_size=len(FEATURE_DB),
-            db_error=DB_ERROR,
-            error="Please choose an image to run search.",
+        return _render_error(
+            message="Please choose an image to run search.",
             method=method,
             top_k=top_k,
-            use_moondream=use_moondream,
-            mode_label=mode_label,
+            pipeline=pipeline,
+            alpha=alpha,
         )
 
     if not _is_allowed_file(uploaded.filename):
-        return render_template(
-            "index.html",
-            db_size=len(FEATURE_DB),
-            db_error=DB_ERROR,
-            error="Unsupported file type. Use JPG, JPEG, PNG, BMP, or WEBP.",
+        return _render_error(
+            message="Unsupported file type. Use JPG, JPEG, PNG, BMP, or WEBP.",
             method=method,
             top_k=top_k,
-            use_moondream=use_moondream,
-            mode_label=mode_label,
+            pipeline=pipeline,
+            alpha=alpha,
         )
 
     # Check file size
     if uploaded.content_length and uploaded.content_length > MAX_FILE_SIZE:
-        return render_template(
-            "index.html",
-            db_size=len(FEATURE_DB),
-            db_error=DB_ERROR,
-            error=f"File too large. Maximum size is {MAX_FILE_SIZE / 1024 / 1024:.0f} MB.",
+        return _render_error(
+            message=f"File too large. Maximum size is {MAX_FILE_SIZE / 1024 / 1024:.0f} MB.",
             method=method,
             top_k=top_k,
-            use_moondream=use_moondream,
-            mode_label=mode_label,
+            pipeline=pipeline,
+            alpha=alpha,
         )
 
     # Validate MIME type
     mime_type = mimetypes.guess_type(uploaded.filename)[0]
     if mime_type not in ALLOWED_MIMETYPES:
-        return render_template(
-            "index.html",
-            db_size=len(FEATURE_DB),
-            db_error=DB_ERROR,
-            error="Invalid file type. Please upload a valid image.",
+        return _render_error(
+            message="Invalid file type. Please upload a valid image.",
             method=method,
             top_k=top_k,
-            use_moondream=use_moondream,
-            mode_label=mode_label,
+            pipeline=pipeline,
+            alpha=alpha,
         )
 
     file_suffix = Path(uploaded.filename).suffix.lower()
@@ -215,24 +587,63 @@ def search():
     try:
         uploaded.save(str(saved_path))
 
-        if use_moondream:
-            moondream_start = time.perf_counter()
-            moondream_response = _call_moondream_caption(saved_path)
-            moondream_time = time.perf_counter() - moondream_start
+        if pipeline == "clip_vlm":
+            total_start = time.perf_counter()
+            query_image = _read_image(saved_path)
+            clip_results, clip_meta = _search_clip_vlm(
+                query_image=query_image,
+                top_k=top_k,
+                alpha=alpha,
+                prompt=vlm_prompt,
+            )
+            total_time = time.perf_counter() - total_start
+
+            report = {
+                "pipeline": "clip_vlm",
+                "query_file": uploaded.filename,
+                "saved_query_file": saved_name,
+                "top_k": top_k,
+                "alpha": alpha,
+                "prompt": vlm_prompt,
+                "timings_ms": {
+                    "query_clip": round(clip_meta["timings"]["query_clip"] * 1000, 2),
+                    "clip_search": round(clip_meta["timings"]["clip_search"] * 1000, 2),
+                    "query_caption": round(clip_meta["timings"]["query_caption"] * 1000, 2),
+                    "semantic_rerank": round(clip_meta["timings"]["semantic_rerank"] * 1000, 2),
+                    "total": round(total_time * 1000, 2),
+                },
+                "query_caption": clip_meta["query_caption"],
+                "results": [
+                    {
+                        "rank": idx + 1,
+                        "filename": item["filename"],
+                        "final_score": round(item["final_score"], 4),
+                    }
+                    for idx, item in enumerate(clip_results)
+                ],
+            }
+            _print_terminal_report(report)
 
             return render_template(
                 "index.html",
                 db_size=len(FEATURE_DB),
+                clip_db_size=len(clip_gallery),
                 db_error=DB_ERROR,
                 method=method,
                 top_k=top_k,
-                use_moondream=use_moondream,
+                pipeline=pipeline,
+                alpha=alpha,
                 mode_label=mode_label,
                 query_image_url=url_for("serve_query_image", filename=saved_name),
-                moondream={
-                    "caption": moondream_response.get("caption", ""),
-                    "filename": moondream_response.get("filename", saved_name),
-                    "time": moondream_time,
+                clip_vlm={
+                    "query_caption": clip_meta["query_caption"],
+                    "results": clip_results,
+                    "alpha": alpha,
+                },
+                timings={
+                    "feature": clip_meta["timings"]["query_clip"],
+                    "search": clip_meta["timings"]["clip_search"] + clip_meta["timings"]["semantic_rerank"],
+                    "total": total_time,
                 },
             )
 
@@ -249,13 +660,37 @@ def search():
 
         total_time = time.perf_counter() - total_start
 
+        report = {
+            "pipeline": "cnn",
+            "query_file": uploaded.filename,
+            "saved_query_file": saved_name,
+            "method": method,
+            "top_k": top_k,
+            "timings_ms": {
+                "feature": round(feature_time * 1000, 2),
+                "search": round(search_time * 1000, 2),
+                "total": round(total_time * 1000, 2),
+            },
+            "results": [
+                {
+                    "rank": idx + 1,
+                    "filename": filename,
+                    "score": round(float(score), 4),
+                }
+                for idx, (filename, score) in enumerate(raw_results)
+            ],
+        }
+        _print_terminal_report(report)
+
         return render_template(
             "index.html",
             db_size=len(FEATURE_DB),
+            clip_db_size=len(clip_gallery),
             db_error=DB_ERROR,
             method=method,
             top_k=top_k,
-            use_moondream=use_moondream,
+            pipeline=pipeline,
+            alpha=alpha,
             mode_label=f"{method.capitalize()} similarity",
             query_image_url=url_for("serve_query_image", filename=saved_name),
             results=_build_result_rows(raw_results, method),
@@ -267,16 +702,19 @@ def search():
         )
 
     except Exception as exc:
-        error_msg = "Search failed. Please check your image and try again."
-        return render_template(
-            "index.html",
-            db_size=len(FEATURE_DB),
-            db_error=DB_ERROR,
-            error=error_msg,
+        report = {
+            "pipeline": pipeline,
+            "query_file": uploaded.filename,
+            "status": "error",
+            "error": str(exc),
+        }
+        _print_terminal_report(report)
+        return _render_error(
+            message=f"Search failed: {exc}",
             method=method,
             top_k=top_k,
-            use_moondream=use_moondream,
-            mode_label=mode_label,
+            pipeline=pipeline,
+            alpha=alpha,
         )
 
 

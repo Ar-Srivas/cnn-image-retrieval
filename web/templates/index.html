@@ -15,10 +15,11 @@
       <p class="eyebrow">Pipeline Visualizer</p>
       <h1>CNN Image Retrieval Frontend</h1>
       <p class="subtitle">
-        Upload a query image, run similarity search, and inspect each step with timing.
+        Upload a query image, switch pipelines, and inspect each step with timing.
       </p>
       <div class="stats">
         <span class="chip">Feature DB: {{ db_size }} images</span>
+        <span class="chip">CLIP Gallery: {{ clip_db_size }} images</span>
       </div>
     </header>
 
@@ -39,6 +40,14 @@
         <h2>Run Search</h2>
         <form method="post" action="/search" enctype="multipart/form-data" class="search-form">
           <label>
+            Pipeline
+            <select name="pipeline">
+              <option value="cnn" {% if pipeline == 'cnn' %}selected{% endif %}>Existing CNN + histogram pipeline</option>
+              <option value="clip_vlm" {% if pipeline == 'clip_vlm' %}selected{% endif %}>CLIP + Moondream (Ollama) fusion pipeline</option>
+            </select>
+          </label>
+
+          <label>
             Query image
             <input type="file" name="query_image" accept=".jpg,.jpeg,.png,.bmp,.webp" required>
           </label>
@@ -56,12 +65,12 @@
             <input type="number" name="top_k" min="1" max="20" value="{{ top_k if top_k else 8 }}">
           </label>
 
-          <label class="inline-toggle">
-            <span>Use Moondream caption (server.py)</span>
-            <input type="checkbox" name="use_moondream" {% if use_moondream %}checked{% endif %}>
+          <label>
+            CLIP + VLM fusion alpha (0.0-1.0)
+            <input type="number" name="alpha" min="0" max="1" step="0.05" value="{{ alpha if alpha is not none else 0.4 }}">
           </label>
 
-          <button type="submit">Search Similar Images</button>
+          <button type="submit">Run Selected Pipeline</button>
         </form>
       </section>
 
@@ -73,22 +82,22 @@
             <p>User image is received by the web wrapper.</p>
           </li>
           <li>
-            <h3>Query Feature Extraction</h3>
-            <p>Existing query pipeline extracts histogram + CNN features.</p>
+            <h3>CNN Pipeline</h3>
+            <p>Extract histogram + CNN features, then rank by cosine or euclidean metrics.</p>
           </li>
           <li>
-            <h3>Similarity Search</h3>
-            <p>Existing search module runs cosine or euclidean ranking.</p>
+            <h3>CLIP + Moondream Pipeline</h3>
+            <p>Retrieve visually with CLIP, caption via Moondream (Ollama) using an internal generalized prompt, then semantic rerank with SBERT.</p>
           </li>
           <li>
-            <h3>Visual Result Grid</h3>
-            <p>Top-K matches are rendered with score and rank.</p>
+            <h3>Terminal Reporting</h3>
+            <p>Every search prints a structured report with timings and top hits to the server terminal.</p>
           </li>
         </ol>
       </section>
     </section>
 
-    {% if query_image_url and (results or moondream) %}
+    {% if query_image_url and (results or clip_vlm) %}
       <section class="results-block card">
         <div class="results-head">
           <div>
@@ -101,18 +110,36 @@
                 | Search: {{ "%.2f"|format(timings.search * 1000) }} ms
                 | Total: {{ "%.2f"|format(timings.total * 1000) }} ms
               {% endif %}
-              {% if moondream %}
-                | Moondream: {{ "%.2f"|format(moondream.time * 1000) }} ms
+              {% if clip_vlm %}
+                | Alpha: {{ "%.2f"|format(clip_vlm.alpha) }}
               {% endif %}
             </p>
           </div>
           <img class="query-preview" src="{{ query_image_url }}" alt="query image">
         </div>
 
-        {% if moondream %}
+        {% if clip_vlm %}
           <div class="moondream-card">
-            <p class="eyebrow">Moondream Analysis</p>
-            <p class="moondream-text">{{ moondream.caption }}</p>
+            <p class="eyebrow">Query Caption (Moondream via Ollama)</p>
+            <p class="moondream-text">{{ clip_vlm.query_caption }}</p>
+          </div>
+        {% endif %}
+
+        {% if clip_vlm and clip_vlm.results %}
+          <div class="result-grid">
+            {% for item in clip_vlm.results %}
+              <article class="result-card">
+                <img src="{{ item.image_url }}" alt="{{ item.filename }}">
+                <div class="result-info">
+                  <p class="rank">#{{ loop.index }}</p>
+                  <p class="filename">{{ item.filename }}</p>
+                  <p class="score">Final: {{ "%.4f"|format(item.final_score) }}</p>
+                  <p class="score">CLIP: {{ "%.4f"|format(item.visual_score) }} | SBERT: {{ "%.4f"|format(item.semantic_score) }}</p>
+                  <p class="score">{{ item.analysis }}</p>
+                  <p class="moondream-text">{{ item.caption }}</p>
+                </div>
+              </article>
+            {% endfor %}
           </div>
         {% endif %}
 

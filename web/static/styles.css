@@ -143,16 +143,23 @@ body {
 
 input,
 select,
+textarea,
 button {
   font: inherit;
 }
 
 input,
-select {
+select,
+textarea {
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 0.56rem 0.62rem;
   background: #fff;
+}
+
+textarea {
+  resize: vertical;
+  min-height: 92px;
 }
 
 button {
